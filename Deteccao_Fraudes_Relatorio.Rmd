@@ -1,0 +1,513 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+---
+
+# Mini Projeto - Data Science Academy
+
+### André Campos da Silva
+### 18 de Novembro, 2020
+
+## Projeto  -  Detecção de Fraudes
+Construir um modelo de analise de fraudes com os dados históricos,com a finalidade de determinar se um futuro clique pode ser fraudulento ou não. 
+Usarei os dados disponibilizados no site do https://www.kaggle.com/c/talkingdata-adtracking-fraud-detection/data
+
+## Coletando os dados
+
+``` {r}
+# Carrego os pacotes necessários para o projeto
+library('tidyverse')
+library('caret')
+library('ROSE')
+library('data.table')
+library('gridExtra')
+library('randomForest')
+library('DMwR')
+library('e1071')
+library('rpart')
+library('C50')
+library("ROCR")
+```
+
+
+
+
+```{r}
+# Carrego os dados de treino que será tratado e usado para a análise e treinamento.
+train_default <- fread('Dados/train_sample.csv',data.table = FALSE, tz="UTC")
+head(train_default)
+```
+
+```{r}
+# Faço uma verificação do formato dos dados.
+glimpse(train_default)
+```
+
+
+## Tratamento dos dados
+
+```{r}
+# Como no dataset de teste não tem a coluna attributed_time, eu vou tira-la do dataset de treino
+# na minha análise ela não é relevante, afinal não teremos ela para os testes.
+train_default$attributed_time <- NULL
+head(train_default)
+```
+
+```{r}
+# Verifico que o dataset só tem um ano e um mês para análise. 
+table(year(train_default$click_time))
+table(month(train_default$click_time))
+```
+
+```{r}
+# Crio uma função que extrai o dia, hora e minuto da variavel click_time para outras variáveis,
+# com seus respectivos nomes, e no final retiro a click_time, não peguei o ano e mês, 
+# pois ambos são apenas um, 11/2017 como verificado anteriormente.
+create_date <- function(x, y ){
+   for (i in y){
+      x$click_Day <- weekdays(y)
+      x$click_Hour <- hour(y)
+      x$click_Minute <- minute(y)
+      x$click_time <- NULL 
+   }
+   return(x)
+}
+```
+
+```{r}
+# Faço o teste  antes para ve se vai rodar do jeito desejado.
+testeF <- train_default[1:50,]
+create_date(testeF, testeF$click_time)
+```
+
+```{r}
+# Faço então a extração no dataset de treino. 
+
+# train <- create_date(train_default, train_default$click_time)
+# tail(train)
+# write_csv(train,'train-tratado.csv')
+
+train <- fread('Dados/train-tratado.csv',data.table = FALSE, tz="UTC")
+# A extração acima, demorou algumas horas, então ao terminar eu salvei o dataset tratado
+# e carreguei ele novavemente para quando precisar rodar o script novamente não precisar refazer
+# esse tratamento.
+```
+
+```{r}
+head(train)
+```
+```{r}
+# Crio uma formula agora para converter as variáveis que estão numericas para factor.
+
+var_convert <- names(train)
+
+to_factor <- function(df, var){
+   for (i in var){
+      df[[i]] <- as.factor(df[[i]])
+   }
+   return(df)
+}
+train2 <- to_factor(train,var_convert)
+```
+
+## Analise Exploratória 
+
+
+```{r}
+# Acessos vs Acessos/Download por dia.
+pl1 <- train2 %>%
+   filter(is_attributed == 0) %>% 
+   ggplot(aes(x =click_Day, y = is_attributed, fill =click_Day)) + 
+   geom_bar(stat = "identity")+
+   labs(title = 'Acessos por dia sem download', x = 'Dias da semana',
+        y = 'Acesso sem download', fill = 'Dias')
+
+pl2 <- train2 %>%
+   filter(is_attributed == 1) %>% 
+   ggplot(aes(x =click_Day, y = is_attributed, fill = click_Day)) + 
+   geom_bar(stat = "identity")+
+   labs(title = 'Acessos por dia com download', x = 'Dias da semana',
+        y = 'Acesso com download', fill = 'Dias')   
+
+grid.arrange(pl1,pl2, nrow=1,ncol=2)
+# Acessos sem download quanto os com download ocorrem com mais frequência na quarta-feira
+```
+
+
+
+```{r}
+# Acessos vs Acessos/Download por hora. 
+pl3 <- train2 %>%
+   filter(is_attributed == 0) %>% 
+   ggplot(aes(x =click_Hour, y = is_attributed, fill =click_Hour)) + 
+   geom_bar(stat = "identity")+
+   labs(title = 'Acessos por dia sem download', x = 'Hora',
+        y = 'Acesso sem download', fill = 'Hora')
+
+pl4 <- train2 %>%
+   filter(is_attributed == 1) %>% 
+   ggplot(aes(x =click_Hour, y = is_attributed, fill =click_Hour)) + 
+   geom_bar(stat = "identity")+
+   labs(title = 'Acessos por dia com download', x = 'Hora',
+        y = 'Acesso sem download', fill = 'Hora')
+
+grid.arrange(pl3,pl4, nrow=1,ncol=2)
+# Acessos sem downloads quanto com downloads ocorrem com mais frequencia entre a madrugada ate o inicio
+# da tarde
+```
+
+ 
+```{r}
+# Acessos dia/hora vs Acessos/Download por dia/hora.
+pl5 <- train2 %>%
+   filter(is_attributed == 0) %>% 
+   group_by(click_Day,click_Hour)%>%
+   ggplot(aes(x =click_Hour, y = is_attributed, fill =click_Day)) + 
+   geom_bar(stat = "identity")+
+   labs(title = 'Acessos por dia/hora sem download', x = 'Hora',
+        y = 'Acesso sem download', fill = 'Dia')
+
+pl6 <- train2 %>%
+   filter(is_attributed == 1) %>% 
+   group_by(click_Day,click_Hour)%>%
+   ggplot(aes(x =click_Hour, y = is_attributed, fill =click_Day)) + 
+   geom_bar(stat = "identity")+
+   labs(title = 'Acessos por dia/hora com download', x = 'Hora',
+        y = 'Acesso sem download', fill = 'Dia')
+
+grid.arrange(pl5,pl6, nrow=1,ncol=2)
+# Existe um padrão para os acessos por dia em relação as horas.
+```
+
+```{r}
+# Dispositivos mais usados / Dispositivos com mais Downloads.
+pl7 <- train2 %>%
+   select(is_attributed, device)%>%
+   filter(is_attributed == 0) %>% 
+   group_by(device)%>%
+   summarise(Quantidade = table(device))%>%
+   filter(Quantidade > 30)%>%
+   ggplot(aes(x = '', y = Quantidade, fill = device)) + 
+   geom_bar(width = 1, stat = "identity") + 
+   coord_polar("y", start = 0, direction = -1) + 
+   labs(title = 'Top 6 - Dispositivos mais usados', 
+        fill = 'Device')+
+   theme(
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      panel.border = element_blank(),
+      panel.grid=element_blank(),
+      axis.ticks = element_blank(),
+      panel.background = element_blank(),
+      axis.text.x=element_blank())
+
+
+pl8 <- train2 %>%
+   select(is_attributed, device)%>%
+   filter(is_attributed == 1) %>% 
+   group_by(device)%>%
+   summarise(Quantidade = table(device))%>%
+   filter(Quantidade > 1)%>%
+   ggplot(aes(x = '', y = Quantidade, fill = device)) + 
+   geom_bar(width = 1, stat = "identity") + 
+   coord_polar("y", start = 0, direction = -1) +
+   labs(title = 'Top 6 - Dispositivos com mais downloads', 
+        fill = 'Device')+
+   theme(
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      panel.border = element_blank(),
+      panel.grid=element_blank(),
+      axis.ticks = element_blank(),
+      panel.background = element_blank(),
+      axis.text.x=element_blank())
+
+grid.arrange(pl7,pl8, nrow=1,ncol=2)
+# O dispositvo 1 por ter mais acessos consequentemente tem mais downloads, e o dispotivo 0
+# apesar de ter menos acesso, tem uma quantidade de download interessante. 
+
+```
+
+```{r}
+# Canais mais usados / canais com mais downloads.
+pl9 <- train2 %>%
+   select(is_attributed, channel)%>%
+   filter(is_attributed == 0) %>% 
+   group_by(channel)%>%
+   summarise(Quantidade = table(channel))%>%
+   filter(Quantidade > 2400)%>%
+   ggplot(aes(x =reorder(channel, Quantidade), y =  Quantidade))+
+   geom_bar(stat = "identity",color = "white", fill = "lightblue")+
+   labs(title = 'Top 10 - Canais com mais acessos.',
+        x = 'Canal', y = 'Quantidade de acessos')
+
+pl10 <- train2 %>%
+   select(is_attributed, channel)%>%
+   filter(is_attributed == 1) %>% 
+   group_by(channel)%>%
+   summarise(Quantidade = table(channel))%>%
+   filter(Quantidade > 4)%>%
+   ggplot(aes(x =reorder(channel, Quantidade), y =  Quantidade))+
+   geom_bar(stat = "identity",color = "white", fill = "lightblue")+
+   labs(title = 'Top 10 - Canais com mais downloads.',
+        x = 'Canal', y = 'Quantidade de acessos')
+
+grid.arrange(pl9,pl10, nrow=1,ncol=2)
+# Nenhum dos canais do top 10 mais usados estão no top 10 do canais com mais downloads.
+# destacando o canal 213 com mais downloads. 
+```
+
+
+```{r}
+# O.S mais usados / O.S com mais downloads.
+pl11 <- train2 %>%
+   select(is_attributed, os)%>%
+   filter(is_attributed == 0) %>% 
+   group_by(os)%>%
+   summarise(Quantidade = table(os))%>%
+   filter(Quantidade > 2340)%>%
+   ggplot(aes(x =reorder(os, Quantidade), y =  Quantidade))+
+   geom_bar(stat = "identity",color = "white", fill = "lightblue")+
+   labs(title = 'Top 10 - O.S com mais acessos.',
+        x = 'O.S', y = 'Quantidade de acessos')
+
+pl12 <- train2 %>%
+   select(is_attributed, os)%>%
+   filter(is_attributed == 1) %>% 
+   group_by(os)%>%
+   summarise(Quantidade = table(os))%>%
+   filter(Quantidade > 4)%>%
+   ggplot(aes(x =reorder(os, Quantidade), y =  Quantidade))+
+   geom_bar(stat = "identity",color = "white", fill = "lightblue")+
+   labs(title = 'Top 10 - O.S com mais downloads.',
+        x = 'O.S', y = 'Quantidade de acessos')
+
+grid.arrange(pl11,pl12, nrow=1,ncol=2)
+# Acessos mais frequentes pelo O.S : 13, 19 ambos estando entre os primeiros no que mais fazem 
+# downloads, juntamente com o 0 e 24.
+```
+ 
+```{r}
+# App mais usados / App com mais downloads.
+pl13 <- train2 %>%
+   select(is_attributed, app)%>%
+   filter(is_attributed == 0) %>% 
+   group_by(app)%>%
+   summarise(Quantidade = table(app))%>%
+   filter(Quantidade > 1999)%>%
+   ggplot(aes(x =reorder(app, Quantidade), y =  Quantidade))+
+   geom_bar(stat = "identity",color = "white", fill = "lightblue")+
+   labs(title = 'Top 10 - App com mais acessos',
+        x = 'App', y = 'Quantidade de acessos')
+
+pl14 <- train2 %>%
+   select(is_attributed, app)%>%
+   filter(is_attributed == 1) %>% 
+   group_by(app)%>%
+   summarise(Quantidade = table(app))%>%
+   filter(Quantidade > 3)%>%
+   ggplot(aes(x =reorder(app, Quantidade), y =  Quantidade))+
+   geom_bar(stat = "identity",color = "white", fill = "lightblue")+
+   labs(title = 'Top 10 - App com mais downloads.',
+        x = 'App', y = 'Quantidade de acessos')
+
+grid.arrange(pl13,pl14, nrow=1,ncol=2)
+# Os apps com maiores acessos não aparecem entre os com mais downloads, este tendo com 
+# mais volume o app 19 com uma  quantidade de download maior em relação aos outros. 
+
+```
+
+## Feature Selection (Seleção de Variáveis) 
+
+```{r}
+# Após a analise exploratória dos dados, uso o random forest e o  glm para a seleção das variáveis
+# para treinar os modelos. 
+train$is_attributed <- as.factor(train$is_attributed)
+train$click_Day <-as.factor(train$click_Day)
+```
+```{r}
+#Random Forest
+feature_selection <- randomForest(is_attributed ~ .,
+                                  data = train, 
+                                  ntree = 100, nodesize = 10, importance = T)
+
+varImpPlot(feature_selection)
+```
+
+```{r}
+#GLM
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 2)
+model <- train(is_attributed ~ . , data = train, method = "glm", trControl = control)
+importance <- varImp(model, scale = FALSE)
+plot(importance)
+# Ambos os modelos mostraram as variáveis (ip, app, channel, device, os), como as mais relevantes
+# usarei elas para os modelos preditivos. 
+```
+
+## Split dos dados 
+
+```{r}
+# Faço a divisão do dados de treino e teste, usando o dataset train, e deixo o test que vou usar
+# no final com o modelo de melhor performance.
+intrain <- createDataPartition(train2$os,p=0.7,list=FALSE)
+trainModel <- train2[intrain,]
+testModel <- train2[-intrain,]
+nrow(trainModel)
+nrow(testModel)
+table(trainModel$is_attributed) 
+str(trainModel)
+```
+
+## Balanceamento dos dados
+
+
+```{r}
+# É necessário balancear a variável target, pois está muito desbalanceada e com isso pode 
+# fazer com que o algoritmo faça previsões equivocadas, então uso o pacote SMOTE
+# para o balanceamento.
+trainModel_balanced <- SMOTE(is_attributed ~ .,trainModel, perc.over =500, perc.under=130)
+table(trainModel_balanced$is_attributed) 
+ggplot(trainModel_balanced, aes(x = is_attributed)) + geom_bar()
+nrow(trainModel_balanced)
+head(trainModel_balanced)
+```
+  
+```{r}
+# Converto todas as variáveis para chacacter deixando apenas a target como factor para
+# usar em alguns algoritmos em outros usarei o com as variaveis factor. 
+var_convert2 <- c ("ip","app","device","os","channel",
+                  "click_Day","click_Hour","click_Minute")
+
+to_character <- function(df, var){
+   for (i in var){
+      df[[i]] <- as.character(df[[i]])
+   }
+   return(df)
+}
+
+trainModel_balanced2 <- to_character(trainModel_balanced,var_convert2)
+testModel2 <- to_character(testModel,var_convert2)
+
+glimpse(trainModel_balanced2)
+glimpse(testModel2)
+```
+
+## Algoritmos de aprendizagem 
+
+```{r}
+# Modelo com o randomForest
+modelo_v1 <- randomForest(is_attributed ~ ip
+                          +app
+                          +channel
+                          +device
+                          +os,
+                          data = trainModel_balanced2,
+                          ntree = 100, 
+                          nodesize = 10)
+
+previsao_v1 <- predict(modelo_v1, testModel2)
+confusionMatrix(previsao_v1, testModel2$is_attributed)
+```
+
+
+```{r}
+# Criando curvas ROC para o modelo
+previsao_v1_ROC <- predict(modelo_v1, newdata = testModel2, type = 'prob')
+targetROC2 <- testModel2$is_attributed
+pred1 <- prediction(previsao_v1_ROC[,2], targetROC2)
+perf1 <- performance(pred1, "tpr","fpr") 
+plot(perf1, col = rainbow(10))
+```
+
+
+```{r}
+# Modelo com o naiveBayes
+modelo_v2 <- naiveBayes(is_attributed ~ ip
+                        +app
+                        +channel
+                        +device
+                        +os,
+                        data = trainModel_balanced2)
+
+previsao_v2 <- predict(modelo_v2, testModel2)
+confusionMatrix(previsao_v2, testModel2$is_attributed)
+```
+
+```{r}
+# Criando curvas ROC para o modelo
+previsao_v2_ROC <- predict(modelo_v2, newdata = testModel2, type = 'raw')
+pred2 <- prediction(previsao_v2_ROC[,2], targetROC2)
+perf2 <- performance(pred2, "tpr","fpr") 
+plot(perf2, col = rainbow(10))
+```
+
+```{r}
+# Modelo com o C5.0
+Cost_func <- matrix(c(0, 2, 1.5, 0), nrow = 2, dimnames = list(c("0", "1"), c("0", "1")))
+
+modelo_v3 <- C5.0(is_attributed ~ ip
+                  +app
+                  +channel
+                  +device
+                  +os,
+                  data = trainModel_balanced,
+                  trials = 100,
+                  cost = Cost_func)
+
+previsao_v3 <- predict(modelo_v3, testModel)
+confusionMatrix(previsao_v3, testModel$is_attributed)
+```
+
+```{r}
+# Criando curvas ROC para o modelo
+targetROC <- testModel$is_attributed
+previsao_v3_ROC <- predict(modelo_v3, newdata = testModel,type = 'class')
+pred3 <- prediction(as.numeric(previsao_v3_ROC), as.numeric(targetROC))
+perf3 <- performance(pred3, "tpr","fpr") 
+plot(perf3, col = rainbow(10))
+```
+
+```{r}
+# Modelo com o rpart
+modelo_v4 <- rpart(is_attributed ~ ip
+                   +app
+                   +channel
+                   +device
+                   +os,
+                   data = trainModel_balanced)
+
+previsao_v4 <- predict(modelo_v4, testModel,type = 'class')
+confusionMatrix(previsao_v4, testModel$is_attributed)
+```
+
+```{r}
+# Criando curvas ROC para o modelo
+previsao_v4_ROC <- predict(modelo_v4, newdata = testModel,type = 'prob')
+pred4 <- prediction(previsao_v4_ROC[,2], targetROC)
+perf4 <- performance(pred4, "tpr","fpr") 
+plot(perf4, col = rainbow(10))
+```
+
+
+## Rodando o algoritmo em produção 
+
+
+```{r}
+# Todos os 4 modelos tiveram resultados satisfatórios, eu decido por usar o randomForest em produção.
+
+# Carrego o data set de test simulando como se fossem dados novos e faço os tratamentos para rodar no algoritmo e adiciono
+# o resultado previsto ao dataset e imprimo as primeiras e ultimas linhas. 
+test_default <- fread('Dados/test_default.csv', data.table = FALSE)
+test_default$click_id <- NULL
+test_default$click_time <- NULL
+var_convert3 <- c ("ip","app","device","os","channel")
+test<- to_character(test_default,var_convert3)
+
+previsao_prod <- predict(modelo_v1, test)
+table(previsao_prod)
+test$is_attributed <- previsao_prod
+head(test)
+tail(test)
+```
